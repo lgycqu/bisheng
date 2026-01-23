@@ -437,7 +437,8 @@ class TextTraceService:
         """
         同步版本：创建预览临时 Token
         """
-        token = str(uuid.uuid4())
+        # 生成安全的随机 Token
+        token = secrets.token_urlsafe(32)
 
         token_data = PreviewTokenData(
             file_id=file_id,
