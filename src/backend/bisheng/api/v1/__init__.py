@@ -9,6 +9,7 @@ from bisheng.api.v1.invite_code import router as invite_code_router
 from bisheng.api.v1.linsight import router as linsight_router
 from bisheng.api.v1.mark_task import router as mark_router
 from bisheng.api.v1.oauth import router as oauth_router
+from bisheng.api.v1.open_api import router as open_api_router
 from bisheng.api.v1.report import router as report_router
 from bisheng.api.v1.skillcenter import router as skillcenter_router
 from bisheng.api.v1.tag import router as tag_router
@@ -42,4 +43,5 @@ __all__ = [
     "tool_router",
     "invite_code_router",
     "oauth_router",
+    "open_api_router",
 ]
