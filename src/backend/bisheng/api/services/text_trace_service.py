@@ -3,6 +3,7 @@ Text Trace Service - 文本溯源服务
 
 提供文本溯源功能，支持精确匹配（Elasticsearch）和语义匹配（Milvus）
 """
+import os
 import secrets
 from enum import Enum
 from typing import List, Optional
@@ -500,3 +501,225 @@ class TextTraceService:
                 logger.warning(f"Failed to get preview URL for file {file_id}: {e}")
 
         return ""
+
+    @classmethod
+    async def get_file_content_for_preview(cls, file: "KnowledgeFile") -> str:
+        """获取文件内容用于预览
+
+        从 MinIO 下载文件并根据文件类型提取文本内容。
+
+        支持的文件格式:
+        - PDF: 使用 fitz (PyMuPDF) 提取文本
+        - Word (doc, docx): 使用 python-docx 提取文本
+        - Excel (xls, xlsx): 使用 pandas 读取并转为字符串
+        - PPT (ppt, pptx): 使用 python-pptx 提取文本
+        - 文本文件 (txt, md, csv): 直接读取
+
+        Args:
+            file: KnowledgeFile 对象
+
+        Returns:
+            文件内容字符串，如果解析失败则返回错误提示信息
+        """
+        if not file or not file.object_name:
+            return "文件不存在或文件路径为空"
+
+        # 获取文件扩展名
+        file_name = file.file_name or file.object_name
+        file_ext = os.path.splitext(file_name)[1].lower()
+
+        try:
+            # 从 MinIO 下载文件内容
+            minio_client = await get_minio_storage()
+            file_bytes = await minio_client.get_object(
+                bucket_name=minio_client.bucket,
+                object_name=file.object_name
+            )
+
+            if not file_bytes:
+                return "无法从存储中获取文件内容"
+
+            # 根据文件类型选择解析方式
+            if file_ext == '.pdf':
+                return cls._extract_pdf_content(file_bytes)
+            elif file_ext in ['.doc', '.docx']:
+                return cls._extract_docx_content(file_bytes, file_ext)
+            elif file_ext in ['.xls', '.xlsx']:
+                return cls._extract_excel_content(file_bytes, file_ext)
+            elif file_ext in ['.ppt', '.pptx']:
+                return cls._extract_pptx_content(file_bytes, file_ext)
+            elif file_ext in ['.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm']:
+                return cls._extract_text_content(file_bytes)
+            else:
+                return f"不支持的文件格式: {file_ext}"
+
+        except Exception as e:
+            logger.exception(f"Failed to extract content from file {file.id}: {e}")
+            return f"文件内容提取失败: {str(e)}"
+
+    @classmethod
+    def _extract_pdf_content(cls, file_bytes: bytes) -> str:
+        """从 PDF 文件提取文本内容"""
+        try:
+            import fitz  # PyMuPDF
+
+            # 从字节流打开 PDF
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            text_content = []
+
+            try:
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    text = page.get_text("text")
+                    if text.strip():
+                        text_content.append(text)
+            finally:
+                doc.close()
+
+            return "\n\n".join(text_content) if text_content else "PDF 文件内容为空"
+
+        except Exception as e:
+            logger.error(f"PDF extraction failed: {e}")
+            return f"PDF 解析失败: {str(e)}"
+
+    @classmethod
+    def _extract_docx_content(cls, file_bytes: bytes, file_ext: str) -> str:
+        """从 Word 文档提取文本内容"""
+        try:
+            from io import BytesIO
+            from docx import Document
+
+            # .doc 格式需要先转换，这里只支持 .docx
+            if file_ext == '.doc':
+                return "暂不支持 .doc 格式的内容预览，请转换为 .docx 格式"
+
+            # 从字节流打开文档
+            doc = Document(BytesIO(file_bytes))
+            text_content = []
+
+            # 提取段落文本
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    text_content.append(paragraph.text)
+
+            # 提取表格文本
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = []
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            row_text.append(cell.text.strip())
+                    if row_text:
+                        text_content.append(" | ".join(row_text))
+
+            return "\n\n".join(text_content) if text_content else "Word 文档内容为空"
+
+        except Exception as e:
+            logger.error(f"DOCX extraction failed: {e}")
+            return f"Word 文档解析失败: {str(e)}"
+
+    @classmethod
+    def _extract_excel_content(cls, file_bytes: bytes, file_ext: str) -> str:
+        """从 Excel 文件提取文本内容"""
+        try:
+            from io import BytesIO
+            import pandas as pd
+
+            # 读取 Excel 文件
+            excel_file = BytesIO(file_bytes)
+
+            # 根据扩展名选择引擎
+            engine = 'openpyxl' if file_ext == '.xlsx' else 'xlrd'
+
+            try:
+                # 读取所有工作表
+                excel_data = pd.read_excel(excel_file, sheet_name=None, engine=engine, dtype=str)
+            except Exception:
+                # 如果指定引擎失败，尝试自动检测
+                excel_file.seek(0)
+                excel_data = pd.read_excel(excel_file, sheet_name=None, dtype=str)
+
+            text_content = []
+
+            for sheet_name, df in excel_data.items():
+                if df.empty:
+                    continue
+
+                # 添加工作表名称
+                text_content.append(f"=== 工作表: {sheet_name} ===")
+
+                # 将 DataFrame 转换为 Markdown 表格格式
+                df = df.fillna("")
+                table_str = df.to_markdown(index=False)
+                if table_str:
+                    text_content.append(table_str)
+
+            return "\n\n".join(text_content) if text_content else "Excel 文件内容为空"
+
+        except Exception as e:
+            logger.error(f"Excel extraction failed: {e}")
+            return f"Excel 文件解析失败: {str(e)}"
+
+    @classmethod
+    def _extract_pptx_content(cls, file_bytes: bytes, file_ext: str) -> str:
+        """从 PPT 文件提取文本内容"""
+        try:
+            from io import BytesIO
+            from pptx import Presentation
+
+            # .ppt 格式需要先转换，这里只支持 .pptx
+            if file_ext == '.ppt':
+                return "暂不支持 .ppt 格式的内容预览，请转换为 .pptx 格式"
+
+            # 从字节流打开演示文稿
+            prs = Presentation(BytesIO(file_bytes))
+            text_content = []
+
+            for slide_num, slide in enumerate(prs.slides, 1):
+                slide_texts = []
+                slide_texts.append(f"--- 幻灯片 {slide_num} ---")
+
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_texts.append(shape.text)
+
+                    # 处理表格
+                    if shape.has_table:
+                        table = shape.table
+                        for row in table.rows:
+                            row_text = []
+                            for cell in row.cells:
+                                if cell.text.strip():
+                                    row_text.append(cell.text.strip())
+                            if row_text:
+                                slide_texts.append(" | ".join(row_text))
+
+                if len(slide_texts) > 1:  # 除了标题外还有内容
+                    text_content.append("\n".join(slide_texts))
+
+            return "\n\n".join(text_content) if text_content else "PPT 文件内容为空"
+
+        except Exception as e:
+            logger.error(f"PPTX extraction failed: {e}")
+            return f"PPT 文件解析失败: {str(e)}"
+
+    @classmethod
+    def _extract_text_content(cls, file_bytes: bytes) -> str:
+        """从文本文件提取内容"""
+        try:
+            # 尝试多种编码
+            encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+
+            for encoding in encodings:
+                try:
+                    content = file_bytes.decode(encoding)
+                    return content if content.strip() else "文本文件内容为空"
+                except UnicodeDecodeError:
+                    continue
+
+            # 如果所有编码都失败，使用 utf-8 并忽略错误
+            return file_bytes.decode('utf-8', errors='ignore')
+
+        except Exception as e:
+            logger.error(f"Text extraction failed: {e}")
+            return f"文本文件解析失败: {str(e)}"
