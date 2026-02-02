@@ -15,8 +15,10 @@ const app_env = { BASE_URL: '' } // /custom
 
 // Use environment variable to determine the target.
 //  const target = process.env.VITE_PROXY_TARGET || "http://127.0.0.1:7860";
-const target = process.env.VITE_PROXY_TARGET || "http://192.168.106.120:3002";
-const fileServiceTarget = "http://192.168.106.116:9000";
+// 代理到本地 Docker 后端（bisheng API 服务）
+const target = process.env.VITE_PROXY_TARGET || "http://localhost:7860";
+// MinIO 文件服务（Docker 映射端口 9100）
+const fileServiceTarget = process.env.VITE_FILE_SERVICE_TARGET || "http://localhost:9100";
 
 // 公共代理配置
 const commonProxyOptions = {
@@ -46,6 +48,10 @@ const apiProxyConfig = createProxyConfig(target);
 // 文件服务路由配置
 const fileServiceRoutes = ["/bisheng", "/tmp-dir"];
 const fileServiceProxyConfig = createProxyConfig(fileServiceTarget);
+// Client 应用路由（/workspace/ 代理到 Docker 前端）
+const clientTarget = process.env.VITE_CLIENT_TARGET || "http://localhost:3001";
+const clientRoutes = ["/workspace"];
+const clientProxyConfig = createProxyConfig(clientTarget, false);
 
 const proxyTargets = {};
 
@@ -56,6 +62,10 @@ apiRoutes.forEach(route => {
 // 添加文件服务路由代理
 fileServiceRoutes.forEach(route => {
   proxyTargets[`${app_env.BASE_URL}${route}`] = fileServiceProxyConfig;
+});
+// 添加 Client 应用路由代理（/workspace/ -> Docker 前端）
+clientRoutes.forEach(route => {
+  proxyTargets[`${app_env.BASE_URL}${route}`] = clientProxyConfig;
 });
 
 
@@ -137,7 +147,7 @@ export default defineConfig(() => {
     },
     server: {
       host: '0.0.0.0',
-      port: 3001,
+      port: 3002,  // 使用 3002 端口，避免与 Docker 前端 3001 冲突
       proxy: {
         ...proxyTargets,
       },
